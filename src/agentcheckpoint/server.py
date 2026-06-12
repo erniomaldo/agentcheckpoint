@@ -18,7 +18,13 @@ import sqlite3
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import (
+    Tool,
+    TextContent,
+    Resource,
+    ResourceTemplate,
+    TextResourceContents,
+)
 
 DB_PATH = os.environ.get(
     "CHECKPOINT_DB_PATH",
@@ -70,6 +76,233 @@ def _upsert(conn: sqlite3.Connection, key: str, value: str) -> int:
         "SELECT version FROM checkpoints WHERE key = ?", (key,)
     ).fetchone()
     return row["version"]
+
+
+# ── Embedded documentation resources ──────────────────────────────────────
+# Agents can read these like files — no separate download needed.
+
+
+DOCS = {
+    "usage": """# AgentCheckpoint — Usage Patterns
+
+## Single-Writer Pattern (cron jobs, solo agents)
+
+Use `force_set_state` — it always succeeds and always replaces.
+
+```python
+mcp_checkpoint_force_set_state(
+    key="workflow:daily-plan",
+    value='{"phase": "research", "progress": 0.3}'
+)
+```
+
+## Multi-Agent Coordination Pattern
+
+Use `get_state` + `set_state` with the version guard (OCC).
+
+```python
+# 1. READ current state
+state = mcp_checkpoint_get_state(key="workflow:plan-today")
+plan = json.loads(state["value"])
+# plan.current_index = 5
+
+# 2. MODIFY — claim the next task
+plan.current_index += 1
+plan.current_task = "analisis"
+
+# 3. WRITE with version guard
+result = mcp_checkpoint_set_state(
+    key="workflow:plan-today",
+    value=json.dumps(plan),
+    expected_version=state["version"]
+)
+
+if result["status"] == "conflict":
+    # Another agent changed the state — retry from step 1
+    pass
+elif result["status"] == "ok":
+    # We own this version now
+    pass
+```
+
+Always pass `expected_version` when multiple agents write to the same key.
+If you get a conflict, re-read and retry — that's the OCC pattern.
+
+## Key Naming Convention
+
+```
+workflow:<id>           — Multi-step workflow state
+project:<name>:<attr>   — Project-level attributes
+lock:<resource>         — Distributed locks
+plan:<date>             — Daily/periodic plans
+checkpoint:<task>       — Task checkpoints
+cron:<job-name>         — Cron job coordination
+```
+
+Use colons as separators. Keep keys semantic but short.
+Values must be valid JSON strings.
+
+## What NOT to Store
+
+| ❌ Don't | ✅ Do |
+|----------|-------|
+| Facts, observations, learnings | agentmemory / vector store |
+| Long text, documents | File system, RAG |
+| Large JSON blobs (>100KB) | Split into multiple keys |
+| Ephemeral task-local state | Keep in memory, write at boundaries |
+
+AgentCheckpoint is for STATE COORDINATION, not memory.
+Use both tools together: checkpoint for state, agentmemory for knowledge.
+
+## Integration with Cron / Workers
+
+```python
+# Worker startup: check if work was already done
+state = mcp_checkpoint_get_state(key="checkpoint:nocturno-2026-06-12")
+if state["status"] != "not_found":
+    print("Work already completed, skipping")
+    return
+
+# Worker claims and executes
+mcp_checkpoint_force_set_state(
+    key="checkpoint:nocturno-2026-06-12",
+    value='{"status": "in-progress", "started_at": "..."}'
+)
+
+# ... do work ...
+
+mcp_checkpoint_force_set_state(
+    key="checkpoint:nocturno-2026-06-12",
+    value='{"status": "completed", "finished_at": "..."}'
+)
+```
+""",
+    "coordination": """# Multi-Agent Coordination
+
+AgentCheckpoint solves the "stale state" problem in multi-agent workflows.
+
+## Problem
+
+Agent A reads state, Agent B writes new state, Agent A writes based on its
+stale read — overwriting B's work. This is the classic read-modify-write race.
+
+## Solution: Optimistic Concurrency Control (OCC)
+
+```python
+# Every agent follows this pattern:
+
+def claim_and_work(key, agent_id):
+    while True:
+        # READ with version
+        current = mcp_checkpoint_get_state(key=key)
+        if current["status"] == "not_found":
+            # First claim
+            result = mcp_checkpoint_set_state(
+                key=key,
+                value=json.dumps({"owner": agent_id, "step": 0}),
+                expected_version=0  # create-only
+            )
+        else:
+            plan = json.loads(current["value"])
+            plan["owner"] = agent_id
+            plan["step"] += 1
+            # WRITE with version guard from the read
+            result = mcp_checkpoint_set_state(
+                key=key,
+                value=json.dumps(plan),
+                expected_version=current["version"]
+            )
+
+        if result["status"] == "ok":
+            return result["version"]
+        # conflict → re-read and retry
+```
+
+Each write carries the version observed at read time. If another agent
+changed the key in between, the write fails with "conflict" and you retry.
+
+## When to Skip Version Guard
+
+Single-writer scenarios (cron jobs, solo agents, sequential workflows):
+use `force_set_state` — no version check, always succeeds.
+
+Multi-writer scenarios (multiple agents, parallel workers, distributed
+systems): use `set_state` with `expected_version` — this is OCC.
+""",
+    "keys": """# Key Naming Convention
+
+## Structure
+
+```
+<domain>:<identifier>[:<attribute>]
+```
+
+- **domain**: what kind of state (workflow, project, lock, plan, checkpoint, cron)
+- **identifier**: unique name within that domain
+- **attribute** (optional): sub-key for structured states
+
+## Examples
+
+| Key | Purpose |
+|-----|---------|
+| `workflow:daily-digest` | Multi-step workflow state |
+| `project:agentcheckpoint:build-status` | Build state for a project |
+| `lock:database-migration` | Mutex for a critical operation |
+| `plan:2026-06-12` | Daily execution plan |
+| `checkpoint:nocturno-pilar-1` | Nightly worker checkpoint |
+| `cron:noticias-mañana` | Cron job coordination |
+
+## Best Practices
+
+- Use colons (`:`) as separators — they're readable and work with LIKE queries
+- Keep keys under 200 chars
+- Values must be valid JSON strings
+- Use `list_state(pattern="project:%")` to find all project keys
+- Group related keys with a common prefix for easy listing
+""",
+}
+
+
+@server.list_resources()
+async def handle_list_resources() -> list[Resource]:
+    return [
+        Resource(
+            uri="checkpoint://docs/usage",
+            name="Usage Patterns",
+            description="How to use agentcheckpoint: single-writer, multi-agent OCC, key naming, anti-patterns",
+            mimeType="text/markdown",
+        ),
+        Resource(
+            uri="checkpoint://docs/coordination",
+            name="Multi-Agent Coordination",
+            description="OCC pattern for multi-agent workflows with conflict detection",
+            mimeType="text/markdown",
+        ),
+        Resource(
+            uri="checkpoint://docs/keys",
+            name="Key Naming Convention",
+            description="Standard key structure and naming best practices",
+            mimeType="text/markdown",
+        ),
+    ]
+
+
+@server.read_resource()
+async def handle_read_resource(uri: str) -> TextResourceContents:
+    parts = uri.split("://", 1)
+    if len(parts) != 2 or parts[0] != "checkpoint":
+        raise ValueError(f"Unknown resource: {uri}")
+
+    doc_id = parts[1].removeprefix("docs/")
+    content = DOCS.get(doc_id)
+    if content is None:
+        raise ValueError(f"Unknown documentation section: {doc_id}")
+
+    return TextResourceContents(
+        uri=uri,
+        mimeType="text/markdown",
+        text=content,
+    )
 
 
 # ── Tool definitions ──────────────────────────────────────────────────────
