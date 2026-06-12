@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcheckpoint"
+version = "1.0.0"
+description = "MCP checkpoint server: atomic state coordination for AI agents, cron workers, and multi-agent systems"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Ernesto Maldonado", email = "erniomaldo@users.noreply.github.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Framework :: MCP",
+]
+dependencies = ["mcp>=1.0.0"]
+keywords = ["mcp", "checkpoint", "state", "agent", "coordination", "hermes", "sqlite"]
+
+[project.optional-dependencies]
+dev = ["build>=1.0", "twine>=5.0"]
+
+[project.urls]
+Homepage = "https://github.com/erniomaldo/agentcheckpoint"
+Source = "https://github.com/erniomaldo/agentcheckpoint"
+Documentation = "https://github.com/erniomaldo/agentcheckpoint#readme"
+
+[project.scripts]
+agentcheckpoint = "agentcheckpoint.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
