@@ -1,80 +1,110 @@
 # AgentCheckpoint
 
-**Servidor MCP de almacenamiento atómico clave-valor para coordinación de agentes de IA.**
+**Almacén atómico clave-valor para coordinación de estado entre agentes de IA.**
 
-Evita que tus agentes de IA trabajen con estado obsoleto. AgentCheckpoint es un servidor
-MCP (Model Context Protocol) minimalista respaldado por SQLite que brinda a tus agentes
-un almacén de estado compartido y atómico — **siempre devolviendo el último valor escrito**.
+[![PyPI - Version](https://img.shields.io/pypi/v/agentcheckpoint?style=flat-square&logo=pypi&color=blue)](https://pypi.org/project/agentcheckpoint/)
+[![PyPI - Python Versions](https://img.shields.io/pypi/pyversions/agentcheckpoint?style=flat-square&logo=python&color=yellow)](https://pypi.org/project/agentcheckpoint/)
+[![License](https://img.shields.io/pypi/l/agentcheckpoint?style=flat-square&color=green)](https://github.com/erniomaldo/agentcheckpoint/blob/main/LICENSE)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/agentcheckpoint?style=flat-square&color=purple)](https://pypistats.org/packages/agentcheckpoint)
+[![GitHub stars](https://img.shields.io/github/stars/erniomaldo/agentcheckpoint?style=flat-square&logo=github)](https://github.com/erniomaldo/agentcheckpoint)
+
+---
+
+<p align="center">
+  <strong>Servidor MCP que evita que tus agentes trabajen con estado obsoleto.</strong><br>
+  <em>~150 líneas de Python, respaldado por SQLite WAL, sin infraestructura.</em>
+</p>
+
+---
+
+## 📦 Instalación
 
 ```bash
 pip install agentcheckpoint
 ```
 
-Luego agrégalo a tu cliente MCP:
+Luego agregalo a tu cliente MCP favorito (saltá a [Configuración por Cliente](#-configuración-por-cliente)).
 
-```json
-{
-  "mcpServers": {
-    "checkpoint": {
-      "command": "agentcheckpoint",
-      "timeout": 10
-    }
-  }
-}
+---
+
+## 🤨 El Problema
+
+Los almacenes de memoria semántica —bases vectoriales, `agentmemory`, `mem0`, etc.— están diseñados para **hechos y aprendizaje**, no para **coordinación de estado**. Cuando múltiples agentes leen y escriben estado compartido, te topás con esto:
+
+| Problema | Lo que pasa | Consecuencia |
+|----------|-------------|--------------|
+| `memory.save()` sin update | Cada save crea **una entrada nueva** | Decenas de versiones obsoletas acumuladas |
+| `memory.recall()` por similitud | Devuelve lo **semánticamente cercano**, no lo último | Leés estado desactualizado |
+| Sin control de concurrencia | Dos agentes leen lo mismo, escriben sin coordinarse | Se pisan los cambios, pérdida de datos |
+| Sin guardia de versión | Una escritura puede sobreescribir ciegamente el trabajo de otro agente | **Workflows corruptos, trabajo rehecho** |
+
+**El resultado:** tus agentes trabajan con estado vencido, vuelven a ejecutar tareas ya completadas, y perdés horas de compute en trabajo duplicado.
+
+---
+
+## ✅ La Solución
+
+AgentCheckpoint no es un almacén de memoria — es un **almacén de estado compartido con garantías atómicas**. Pensalo como un semáforo o un `shared memory` para agentes de IA.
+
+```
+┌──────────────────────┐    MCP stdio    ┌────────────────────┐    SQLite WAL    ┌──────────────┐
+│  Agente A             │ ───────────────→│                    │ ──────────────→│              │
+│  Agente B             │ ───────────────→│  AgentCheckpoint   │ ──────────────→│  state.db    │
+│  Cron Worker C        │ ───────────────→│  Servidor MCP      │ ──────────────→│  (1 archivo) │
+│  Pipeline D            │ ←──────────────│                    │ ←──────────────│              │
+└──────────────────────┘                  └────────────────────┘                └──────────────┘
 ```
 
-## El Problema
+### ¿Qué lo hace diferente?
 
-Los almacenes de memoria semántica (bases vectoriales, agentmemory, etc.) están diseñados
-para hechos, no para coordinación de estado. Cuando múltiples agentes leen/escriben
-estado compartido:
+| Característica | AgentCheckpoint | agentmemory / vector DB | Redis | Archivo JSON |
+|---------------|----------------|------------------------|-------|--------------|
+| **Propósito** | Coordinación de estado | Hechos, aprendizaje | Caché genérica | Persistencia básica |
+| **Escritura** | Siempre reemplaza (UPSERT) | Siempre añade (INSERT) | Sobrescribe (sin versionado) | Sobrescribe todo el archivo |
+| **Lectura** | `SELECT WHERE key=?` exacto | `ORDER BY distance` semántico | Key lookup directo | Parsear y buscar |
+| **Concurrencia** | Optimistic Concurrency Control (OCC) | Ninguna | Ninguna nativa | Ninguna |
+| **Persistencia** | SQLite WAL (transaccional, ACID) | Varía por backend | En RAM / RDB / AOF | Depende del FS |
+| **Infraestructura** | Cero — un proceso stdio | Servidor, API, índices | Servidor dedicado | Cero |
+| **Tooling MCP** | Nativo — autodescubrimiento de tools | No | No | No |
+| **Líneas de código** | ~150 | Miles | ~50K+ | ~5 (sin garantías) |
 
-- `memory.save()` crea **nuevas entradas** en lugar de actualizar — se acumulan decenas
-  de versiones obsoletas
-- `memory.recall()` devuelve resultados por **similitud semántica**, no por la última
-  marca de tiempo
-- Los agentes leen estado desactualizado y **vuelven a ejecutar trabajo ya completado**
+**Usalos juntos:** AgentCheckpoint para el estado compartido, y memoria vectorial o agentmemory para hechos, observaciones y descubrimientos.
 
-## La Solución — 100 líneas de Python
+---
 
-AgentCheckpoint es un almacén clave-valor con escrituras atómicas, **diseñado para
-coordinación de estado, no para memoria**.
+## 🛠️ Herramientas (API MCP)
 
-- **Siempre lo último** — `get_state(key)` devuelve el único valor actual
-- **Escrituras atómicas** — `force_set_state(key, value)` siempre actualiza, nunca añade
-- **Seguro contra conflictos** — `set_state(key, value, expected_version)` detecta
-  conflictos de lectura-modificación-escritura
-- **Respaldado por SQLite** — cero infraestructura, un solo archivo, modo WAL
-- **Una tabla, cinco herramientas** — lo suficientemente simple para entenderlo en 5 minutos
+| Herramienta | Descripción | Cuándo usarla |
+|-------------|-------------|---------------|
+| `get_state(key)` | Lee el valor actual, versión y timestamp de una clave | Antes de toda modificación |
+| `set_state(key, value, expected_version?)` | Escribe con guardia de versión opcional (OCC) | Cuando **múltiples** agentes escriben la misma clave |
+| `force_set_state(key, value)` | Escritura atómica incondicional | Cuando **un solo** agente/worker escribe la clave |
+| `list_state(pattern?)` | Lista claves por patrón SQL LIKE | Para auditoría, descubrimiento, debugging |
+| `delete_state(key)` | Elimina una clave permanentemente | Limpieza de estado completado |
 
-## Herramientas
+Cada herramienta se autodescubre a través del protocolo MCP — no necesitás configurar nada extra.
 
-| Herramienta | Descripción |
-|-------------|-------------|
-| `get_state` | Lee el valor actual, versión y timestamp de una clave |
-| `set_state` | Escribe con guardia de versión opcional (detección OCC de conflictos) |
-| `force_set_state` | Escritura atómica incondicional (para flujos de un solo escritor) |
-| `list_state` | Lista claves que coinciden con un patrón SQL LIKE |
-| `delete_state` | Elimina una clave permanentemente |
+> **Nota para clientes MCP:** en algunos clientes las herramientas se prefijan como `mcp_checkpoint_get_state`, `mcp_checkpoint_set_state`, etc.
 
-## Inicio Rápido
+---
 
-### 1. Instalación
+## 🚀 Inicio Rápido
+
+### 1. Instalar
 
 ```bash
 pip install agentcheckpoint
-# o
+# o si usás uv:
 uv pip install agentcheckpoint
 ```
 
 ### 2. Agregar a tu cliente MCP
 
-Copia y pega la configuración para tu plataforma. Después de agregarla,
-**reinicia tu cliente**.
+La configuración varía según tu plataforma. Después de agregarla, **reiniciá tu cliente** o recargá los MCP servers.
 
 #### 🟣 Claude Desktop
 
-Edita `claude_desktop_config.json`:
+Editá `claude_desktop_config.json`:
 
 ```json
 {
@@ -89,7 +119,7 @@ Edita `claude_desktop_config.json`:
 
 #### 🔵 Claude Code
 
-Agrega a `~/.claude/settings.json` bajo `mcpServers`:
+Agregá a `~/.claude/settings.json`:
 
 ```json
 {
@@ -102,7 +132,7 @@ Agrega a `~/.claude/settings.json` bajo `mcpServers`:
 }
 ```
 
-O usa la CLI:
+O desde la CLI:
 
 ```bash
 claude mcp add checkpoint -- python -m agentcheckpoint
@@ -110,7 +140,7 @@ claude mcp add checkpoint -- python -m agentcheckpoint
 
 #### 🟢 Cursor
 
-Agrega a `~/.cursor/mcp.json`:
+Agregá a `~/.cursor/mcp.json`:
 
 ```json
 {
@@ -125,7 +155,7 @@ Agrega a `~/.cursor/mcp.json`:
 
 #### 🟠 Windsurf
 
-Agrega a `~/.codeium/windsurf/mcp_config.json`:
+Agregá a `~/.codeium/windsurf/mcp_config.json`:
 
 ```json
 {
@@ -140,8 +170,7 @@ Agrega a `~/.codeium/windsurf/mcp_config.json`:
 
 #### ⚪ Continue.dev
 
-Agrega a `~/.continue/config.json` bajo `experimental.mcpServers` (o `mcpServers`
-según la versión):
+Agregá a `~/.continue/config.json`:
 
 ```json
 {
@@ -158,7 +187,7 @@ según la versión):
 
 #### 🔶 Hermes Agent
 
-Agrega a `~/.hermes/config.yaml` bajo `mcp_servers`:
+Agregá a `~/.hermes/config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -167,11 +196,9 @@ mcp_servers:
     timeout: 10
 ```
 
-Luego ejecuta `/reload-mcp` en sesión, o reinicia el gateway.
+Luego ejecutá `/reload-mcp` en sesión, o reiniciá el gateway.
 
 #### 🐍 Cualquier cliente con soporte uvx
-
-Si tu cliente soporta `uvx` (la mayoría modernos lo hacen):
 
 ```json
 {
@@ -185,94 +212,267 @@ Si tu cliente soporta `uvx` (la mayoría modernos lo hacen):
 }
 ```
 
-### 3. Verificar que funciona
+### 3. Verificar
 
-Una vez configurado, pregúntale a tu agente:
+Preguntale a tu agente:
 
-> "¿Qué herramientas tengo del servidor MCP checkpoint?"
+> _"¿Qué herramientas tengo del servidor MCP checkpoint?"_
 
-Deberías ver cinco herramientas: `get_state`, `set_state`, `force_set_state`,
-`list_state` y `delete_state` (prefijadas con `mcp_checkpoint_` en algunos clientes).
+Deberías ver las 5 herramientas listadas arriba.
 
-### 4. Uso básico
+### 4. Primer checkpoint
 
 ```python
-# Ejemplo: guardar y leer un checkpoint
+# Guardar estado
 mcp_checkpoint_force_set_state(
     key="proyecto:build-status",
     value='{"phase": "testing", "passed": 13, "failed": 2}'
 )
 
-# Más tarde...
+# Leer estado después
 status = mcp_checkpoint_get_state(key="proyecto:build-status")
-# → {value: {...}, version: 1, updated_at: "2026-06-12"}
+# → {status: "ok", key: "...", value: {...}, version: 1, updated_at: "2026-06-16T..."}
 ```
 
-## Ejemplo: Coordinación Multi-Agente
+---
+
+## 🎯 Patrones de Uso
+
+### Patrón 1: Escritor Único (cron jobs, agentes solitarios)
+
+Usá `force_set_state` — siempre funciona, siempre reemplaza:
 
 ```python
-# Agente A lee el plan actual
-state = client.call_tool("get_state", {"key": "workflow:plan-hoy"})
-plan = json.loads(state.value)
-# plan.current_index = 5, plan.current_status = "completada"
+# Worker nocturno: checkpoint de progreso
+mcp_checkpoint_force_set_state(
+    key="checkpoint:nocturno-2026-06-16",
+    value='{"status": "in-progress", "started_at": "2026-06-16T03:00:00Z"}'
+)
 
-# Agente A toma la siguiente tarea
-plan.current_index += 1  # ahora 6
-plan.current_status = "en-progreso"
-client.call_tool("force_set_state", {
-    "key": "workflow:plan-hoy",
-    "value": json.dumps(plan)
-})
+# ... procesando ...
 
-# ... El Agente A trabaja en la tarea ...
-
-# Agente A la marca como completada
-plan.tasks[6].status = "completada"
-plan.current_status = "completada"
-client.call_tool("force_set_state", {
-    "key": "workflow:plan-hoy",
-    "value": json.dumps(plan)
-})
-
-# Agente B (siguiente tick) lee — siempre obtiene lo último
+mcp_checkpoint_force_set_state(
+    key="checkpoint:nocturno-2026-06-16",
+    value='{"status": "completed", "records_processed": 1427, "finished_at": "..."}'
+)
 ```
 
-## Configuración
+### Patrón 2: Múltiples Agentes con OCC (el más importante)
 
-| Variable de entorno | Por defecto | Descripción |
-|---------------------|-------------|-------------|
-| `CHECKPOINT_DB_PATH` | `~/.hermes/checkpoints.db` | Ruta de la base de datos SQLite |
+Usá `get_state` + `set_state` con el version guard (Optimistic Concurrency Control):
 
-## Arquitectura
+```python
+# 1. LEER con versión
+current = mcp_checkpoint_get_state(key="workflow:plan-hoy")
+plan = json.loads(current["value"])
+# plan.current_index = 5, version = 3
+
+# 2. MODIFICAR
+plan.current_index += 1
+plan.current_task = "analisis"
+
+# 3. ESCRIBIR con la versión que leímos
+result = mcp_checkpoint_set_state(
+    key="workflow:plan-hoy",
+    value=json.dumps(plan),
+    expected_version=current["version"]  # ← guardia OCC
+)
+
+if result["status"] == "conflict":
+    # Otro agente cambió el estado → releer y reintentar
+    pass
+elif result["status"] == "ok":
+    # Cambio exitoso, nueva versión asignada
+    print(f"Checkpoint actualizado, versión {result['version']}")
+```
+
+Cada escritura lleva la versión observada al leer. Si otro agente cambió la clave en el medio, el write falla con `conflict` — releés y reintentás. Este es el patrón estándar de **Optimistic Concurrency Control (OCC)**, el mismo que usan sistemas como Elasticsearch, CouchDB, y Git.
+
+### Patrón 3: Lock Distribuido
+
+```python
+# Intentar adquirir un lock (create-only)
+result = mcp_checkpoint_set_state(
+    key="lock:db-migration",
+    value=json.dumps({"owner": "agent-A", "acquired_at": "..."}),
+    expected_version=0  # ← solo funciona si NO existe
+)
+
+if result["status"] == "ok":
+    # Lock adquirido — ejecutar operación crítica
+    run_migration()
+    # Liberar
+    mcp_checkpoint_delete_state(key="lock:db-migration")
+else:
+    # Lock tomado por otro — esperar o abortar
+    pass
+```
+
+### Patrón 4: Skip si ya se hizo (idempotencia)
+
+```python
+# Antes de arrancar: el trabajo ya se completó?
+state = mcp_checkpoint_get_state(key="checkpoint:emitir-facturas")
+if state["status"] != "not_found":
+    print("Trabajo ya completado, saltando")
+    return
+
+# Claim + ejecutar
+mcp_checkpoint_force_set_state(
+    key="checkpoint:emitir-facturas",
+    value='{"status": "started"}'
+)
+# ... hacer el trabajo ...
+```
+
+---
+
+## 📐 Convención de Nombres de Claves
+
+Usá esta estructura para mantener las claves organizadas:
 
 ```
-┌──────────────┐     MCP stdio     ┌──────────────────┐     SQLite WAL    ┌──────────┐
-│  Agente /    │ ────────────────→ │  agentcheckpoint  │ ───────────────→ │ state.db │
-│  Cron Worker │ ←──────────────── │  Servidor MCP     │ ←─────────────── │ (1 file) │
-└──────────────┘                   └──────────────────┘                  └──────────┘
+<dominio>:<identificador>[:<atributo>]
 ```
 
-El servidor se ejecuta como un subproceso stdio. Las herramientas se autodescubren
-a través del cliente MCP. Sin puertos de red, sin contenedor, sin configuración más
-allá de agregarlo a tu `mcpServers`.
+| Ejemplo | Propósito |
+|---------|-----------|
+| `workflow:daily-digest` | Estado de un workflow multi-paso |
+| `project:agentcheckpoint:build-status` | Estado de build de un proyecto |
+| `lock:database-migration` | Mutex para operación crítica |
+| `plan:2026-06-16` | Plan de ejecución diario |
+| `checkpoint:nocturno-pilar-1` | Checkpoint de worker nocturno |
+| `cron:noticias-manana` | Coordinación de cron job |
 
-## ¿Por qué no usar agentmemory / base vectorial?
+**Buenas prácticas:**
+- Usá dos puntos (`:`) como separadores — son legibles y funcionan con `SELECT LIKE`
+- No superes los **200 caracteres** por clave
+- Los valores **siempre deben ser JSON válido**
+- Usá `list_state(pattern="project:%")` para encontrar todas las claves de un dominio
 
-AgentCheckpoint no reemplaza la memoria — es una herramienta diferente para un
-trabajo diferente:
+---
 
-| | AgentCheckpoint | Memoria Vectorial/Semántica |
-|---|---|---|
-| **Propósito** | Coordinación de estado | Hechos, aprendizaje, recuperación |
-| **Escritura** | Siempre reemplaza (UPDATE) | Siempre añade (INSERT) |
-| **Lectura** | Coincidencia exacta de clave (`SELECT WHERE key=?`) | Similitud semántica (`ORDER BY distance`) |
-| **Concurrencia** | Guardia de versión (OCC) | Ninguna |
-| **Persistencia** | SQLite WAL (transaccional) | Varía según el backend |
+## 📊 API de Referencia
 
-**Úsalos juntos**: AgentCheckpoint para estado compartido (planes, checkpoints,
-bloqueos), memoria vectorial para descubrimientos, observaciones y hechos.
+### `get_state(key)`
 
-## Desarrollo
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `key` | `string` | ✅ | Clave a leer |
+
+**Respuesta exitosa:**
+```json
+{"status": "ok", "key": "workflow:plan", "value": "...", "version": 3, "updated_at": "2026-06-16T..."}
+```
+
+**Clave inexistente:**
+```json
+{"status": "not_found", "key": "workflow:plan"}
+```
+
+### `set_state(key, value, expected_version?)`
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `key` | `string` | ✅ | Clave a escribir |
+| `value` | `string` | ✅ | Valor (JSON string) |
+| `expected_version` | `integer` | ❌ | -1=incondicional (defecto), 0=solo crear, N=update versionado |
+
+**Comportamiento del version guard:**
+| `expected_version` | Resultado |
+|--------------------|-----------|
+| `-1` (omitido) | Escribe siempre (como `force_set_state`) |
+| `0` | Crea solo si NO existe. Falla con `conflict` si ya existe |
+| `N > 0` | Actualiza solo si la versión almacenada coincide con N. Falla con `conflict` si no coincide |
+
+### `force_set_state(key, value)`
+
+Incondicional. Siempre escribe. No tiene version guard.
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `key` | `string` | ✅ | Clave a escribir |
+| `value` | `string` | ✅ | Valor (JSON string) |
+
+### `list_state(pattern?)`
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `pattern` | `string` | ❌ | Patrón SQL LIKE (`%` = cualquier texto, `_` = un caracter). Defecto: `%` |
+
+### `delete_state(key)`
+
+| Parámetro | Tipo | Requerido | Descripción |
+|-----------|------|-----------|-------------|
+| `key` | `string` | ✅ | Clave a eliminar |
+
+---
+
+## ⚙️ Configuración
+
+| Variable de entorno | Defecto | Descripción |
+|--------------------|---------|-------------|
+| `CHECKPOINT_DB_PATH` | `~/.hermes/checkpoints.db` | Ruta del archivo SQLite |
+
+Ejemplo con ruta personalizada:
+
+```bash
+CHECKPOINT_DB_PATH=/tmp/mi-estado.db agentcheckpoint
+```
+
+---
+
+## 🏗️ Arquitectura
+
+```
+┌──────────────────────┐       stdio (stdin/stdout)      ┌────────────────────┐
+│                       │                                  │                    │
+│  Cliente MCP          │ ────── JSON-RPC (MCP) ───────→  │  agentcheckpoint   │
+│  (Claude, Cursor,     │ ←────────────────────────────── │  Servidor MCP      │
+│   Windsurf, Hermes)   │                                  │                    │
+│                       │                                  │  ┌──────────────┐  │
+└──────────────────────┘                                  │  │  SQLite WAL   │  │
+                                                          │  │  state.db     │  │
+                                                          │  │  (1 archivo)  │  │
+                                                          │  └──────────────┘  │
+                                                          └────────────────────┘
+```
+
+### Detalles técnicos
+
+- **Transporte:** stdio (MCP subprocess) — sin puertos de red, sin contenedores
+- **Base de datos:** SQLite en modo WAL (Write-Ahead Logging) para lecturas concurrentes sin bloqueos
+- **Concurrencia:** `PRAGMA synchronous=NORMAL` — balance entre durabilidad y velocidad
+- **Validación:** todo valor se valida como JSON al escribirse
+- **Versionado:** cada UPSERT incrementa el contador de versión atómicamente
+- **Timeout de conexión:** 5 segundos en SQLite, 10 segundos recomendados en el cliente MCP
+- **Atomicidad:** las escrituras son transaccionales — o se persisten completas o no se persisten
+
+---
+
+## ❓ FAQ
+
+**P: ¿AgentCheckpoint reemplaza a agentmemory?**
+R: No. Son herramientas complementarias. AgentCheckpoint coordina estado (¿quién hizo qué? ¿en qué paso vamos?). agentmemory guarda hechos y aprendizajes (¿qué descubrimos? ¿cómo funciona X?). **Usalos juntos.**
+
+**P: ¿Puedo tener múltiples instancias apuntando al mismo archivo?**
+R: Técnicamente SQLite WAL soporta múltiples lectores concurrentes, pero para escritores múltiples mejor usá una sola instancia del servidor MCP. Si necesitás alta disponibilidad, considerá poner el `.db` en un volumen compartido.
+
+**P: ¿Qué pasa si el proceso se cae a la mitad de una escritura?**
+R: SQLite WAL garantiza atomicidad — o se persiste el cambio completo, o no se persiste nada. No hay escrituras parciales.
+
+**P: ¿Cuánto puede medir un valor?**
+R: Los valores son strings JSON. SQLite puede manejar valores de hasta ~1GB teóricamente, pero te recomiendo mantenerlos bajo **100KB**. Para datos grandes, guardá una referencia (path de archivo, URL) como valor.
+
+**P: ¿Y si necesito limpiar checkpoints viejos?**
+R: Podés usar `delete_state` para claves individuales o escribir un script que itere con `list_state` y borre según el `updated_at`.
+
+**P: ¿Soporta TTL / expiración automática?**
+R: No nativamente, pero podés implementarlo en tu agente: al leer, verificá el `updated_at` y decidí si el estado está vencido.
+
+---
+
+## 🧑‍💻 Desarrollo
 
 ```bash
 git clone https://github.com/erniomaldo/agentcheckpoint
@@ -280,14 +480,42 @@ cd agentcheckpoint
 pip install -e ".[dev]"
 ```
 
-## Licencia
+El código fuente está en `src/agentcheckpoint/`:
 
-MIT
+| Archivo | Lo que hace |
+|---------|-------------|
+| `__init__.py` | Versión del paquete |
+| `__main__.py` | Entry point (`python -m agentcheckpoint`) |
+| `server.py` | Servidor MCP completo (~150 líneas) |
+
+### Cómo contribuir
+
+1. Forkeá el repo
+2. Cread una rama (`git checkout -b feature/algo-genial`)
+3. Hacé tus cambios
+4. Commit con mensajes claros
+5. Push y abrí un Pull Request
 
 ---
 
-## Idiomas
+## 📜 Licencia
 
-- [English](README.en.md)
-- [Português](README.pt.md)
-- [Français](README.fr.md)
+MIT © [Ernesto Maldonado](https://github.com/erniomaldo)
+
+---
+
+## 🌐 Idiomas
+
+| Idioma | Archivo |
+|--------|---------|
+| 🇪🇸 Español | `README.md` (este) |
+| 🇺🇸 English | [`README.en.md`](README.en.md) |
+| 🇫🇷 Français | [`README.fr.md`](README.fr.md) |
+| 🇧🇷 Português | [`README.pt.md`](README.pt.md) |
+
+---
+
+<p align="center">
+  <sub>Hecho con ❤️ para que los agentes no pisen el estado de otros agentes.</sub><br>
+  <sub>¿Te sirvió? Dejá una ⭐ en <a href="https://github.com/erniomaldo/agentcheckpoint">GitHub</a></sub>
+</p>
