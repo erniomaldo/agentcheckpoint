@@ -6,7 +6,7 @@
 [![PyPI - Python Versions](https://img.shields.io/pypi/pyversions/agentcheckpoint?style=flat-square&logo=python&color=yellow)](https://pypi.org/project/agentcheckpoint/)
 [![License](https://img.shields.io/pypi/l/agentcheckpoint?style=flat-square&color=green)](https://github.com/erniomaldo/agentcheckpoint/blob/main/LICENSE)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/agentcheckpoint?style=flat-square&color=purple)](https://pypistats.org/packages/agentcheckpoint)
-[![GitHub stars](https://img.shields.io/github/stars/erniomaldo/agentcheckpoint?style=flat-square&logo=github)](https://github.com/erniomaldo/agentcheckpoint)
+[![GitHub Repo Stars](https://img.shields.io/github/stars/erniomaldo/agentcheckpoint?style=flat-square)](https://github.com/erniomaldo/agentcheckpoint)
 
 ---
 
@@ -14,6 +14,10 @@
   <strong>Servidor MCP que evita que tus agentes trabajen con estado obsoleto.</strong><br>
   <em>~150 líneas de Python, respaldado por SQLite WAL, sin infraestructura.</em>
 </p>
+
+---
+
+🌐 [🇺🇸 English](README.md) · [🇫🇷 Français](README.fr.md) · [🇧🇷 Português](README.pt.md)
 
 ---
 
