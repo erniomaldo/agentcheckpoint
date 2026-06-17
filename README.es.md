@@ -5,6 +5,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/agentcheckpoint?style=flat-square&logo=pypi&color=blue)](https://pypi.org/project/agentcheckpoint/)
 [![PyPI - Python Versions](https://img.shields.io/pypi/pyversions/agentcheckpoint?style=flat-square&logo=python&color=yellow)](https://pypi.org/project/agentcheckpoint/)
 [![License](https://img.shields.io/pypi/l/agentcheckpoint?style=flat-square&color=green)](https://github.com/erniomaldo/agentcheckpoint/blob/main/LICENSE)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/agentcheckpoint?style=flat-square&color=purple)](https://pypistats.org/packages/agentcheckpoint)
 
 ---
 
